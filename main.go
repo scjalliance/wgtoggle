@@ -3,77 +3,38 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"os"
-	"time"
+	"syscall"
 
-	"github.com/gentlemanautomaton/winservice"
-	"github.com/jackpal/gateway"
+	"github.com/gentlemanautomaton/signaler"
 )
 
 func main() {
 	var (
-		app  = App()
-		conf = AppConfig(app)
+		app                     = App()
+		installCmd, installConf = InstallCommand(app)
+		uninstallCmd            = UninstallCommand(app)
+		updateCmd, updateConf   = UpdateCommand(app)
 	)
 
-	_, err := app.Parse(os.Args[1:])
+	command, err := app.Parse(os.Args[1:])
 	if err != nil {
 		app.Usage(os.Args[1:])
 		os.Exit(1)
 	}
 
-	tunnel := "WireGuardTunnel$" + conf.Tunnel
-	svcFound, err := winservice.Exists(tunnel)
-	if err != nil {
-		fmt.Printf("Service check failed: %v.\n", err)
-		os.Exit(2)
-	}
+	// Shutdown when we receive a termination signal
+	shutdown := signaler.New().Capture(os.Interrupt, syscall.SIGTERM)
 
-	if !svcFound {
-		// The WireGuard tunnel service doesn't exist. There's nothing to
-		// manage so we just exit.
-		return
-	}
+	// Ensure that we cleanup even if we panic
+	defer shutdown.Trigger()
 
-	fmt.Printf("Tunnel found: %s\n", tunnel)
-
-	gw, err := gateway.DiscoverGateway()
-	if err != nil {
-		fmt.Printf("Gateway query failed: %s\n", tunnel)
-	}
-
-	fmt.Printf("Gateway discovered: %s\n", gw)
-
-	gwMatched := false
-	for i := range conf.Gateway {
-		if gw.Equal(conf.Gateway[i]) {
-			gwMatched = true
-			break
-		}
-	}
-	if gwMatched {
-		fmt.Printf("Gateway matched: %s\n", gw)
-	} else {
-		fmt.Printf("Gateway not matched.\n")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-	if !gwMatched {
-		fmt.Printf("Starting %s...", tunnel)
-		if err := winservice.Start(ctx, tunnel); err != nil {
-			fmt.Printf(" failed: %v\n", err)
-			os.Exit(3)
-		}
-		fmt.Printf(" succeeded.")
-	} else {
-		fmt.Printf("Stopping %s...", tunnel)
-		if err := winservice.Stop(ctx, tunnel); err != nil {
-			fmt.Printf(" failed: %v\n", err)
-			os.Exit(3)
-		}
-		fmt.Printf(" succeeded.")
+	switch command {
+	case installCmd.FullCommand():
+		install(shutdown.Context(), os.Args[0], *installConf)
+	case uninstallCmd.FullCommand():
+		uninstall(shutdown.Context())
+	case updateCmd.FullCommand():
+		update(shutdown.Context(), *updateConf)
 	}
 }
